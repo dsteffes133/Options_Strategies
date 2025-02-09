@@ -1,3 +1,7 @@
+import pandas as pd
+import requests
+import numpy as np
+
 def get_historical_underlying_data(ticker):
     """
     Fetches daily adjusted historical data for the given ticker from Alpha Vantage.

@@ -1,6 +1,8 @@
 # app.py
+import numpy as np
 import streamlit as st
 import datetime
+from simulation.simulate import simulate_terminal_price_with_path
 import pandas as pd
 import plotly.graph_objects as go
 from full_script import (
@@ -127,4 +129,24 @@ if st.button("Run Strategy Analysis"):
             fig_normal.update_layout(title=f"Payoff Diagram (Normal GBM) for {strat.name}", xaxis_title="Underlying Price at Expiration", yaxis_title="Payoff")
             st.plotly_chart(fig_thesis)
             st.plotly_chart(fig_normal)
+
+
+        with st.expander("Show Sample Simulated Underlying Price Path"):
+        # Determine the starting price for simulation:
+            if future_entry_date_input <= datetime.date.today():
+                future_entry_date = None
+            else:
+            # If a future entry date is specified, forecast the price:
+            # (Assuming you have forecast_future_price in your module)
+                from full_script import forecast_future_price
+                S0_future = forecast_future_price(current_price, today_date, future_entry_date, risk_free_rate=0.02, volatility=0.30, num_paths=1000)
+
+                T = projection_horizon_days / 365.0
+                terminal_prices, simulated_paths = simulate_terminal_price_with_path(S0_future, T, risk_free_rate=0.02, volatility=0.30, thesis_scenarios=thesis_scenarios, num_paths=1000, use_thesis=True)
+                sample_path = simulated_paths[0]
+                time_points = np.linspace(0, T, len(sample_path))
+                fig_path = go.Figure()
+                fig_path.add_trace(go.Scatter(x=time_points, y=sample_path, mode='lines', name='Simulated Path'))
+                fig_path.update_layout(title="Simulated Underlying Price Path", xaxis_title="Time (years)", yaxis_title="Price")
+                st.plotly_chart(fig_path)
 
