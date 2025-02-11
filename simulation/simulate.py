@@ -1,103 +1,100 @@
-import pandas as pd
+# simulation/simulate.py
+
 import numpy as np
-import QuantLib as ql
+from thesis import Thesis, Scenario
 
-############################################################
-# 2.5 FUTURE PRICE FORECASTING
-############################################################
+def simulate_terminal_prices(S0, T, base_risk_free_rate, base_volatility, thesis: Thesis, num_paths=1000):
+    """
+    Simulate terminal prices at time T under multiple scenarios from the Thesis.
+    Each simulation path does the following:
+      1) Randomly pick a scenario (weighted by scenario probability).
+      2) Adjust the drift using the scenario's expected price move percentage.
+         - If the scenario specifies a move of, say, +10%, we use drift_adjustment = ln(1 + 0.10)/T.
+      3) Adjust the volatility using the scenario's vol_adjust_pct.
+         - For example, a vol_adjust_pct of +0.20 increases volatility by 20%.
+      4) Use the geometric Brownian motion formula:
+             S(T) = S0 * exp((r + drift_adjustment - 0.5 * sigma²)*T + sigma*sqrt(T)*Z)
+         where Z ~ N(0,1).
+    
+    Parameters:
+      S0: float
+          The current underlying price.
+      T: float
+          Time to expiration in years.
+      base_risk_free_rate: float
+          The base risk-free rate (annualized).
+      base_volatility: float
+          The base volatility (annualized).
+      thesis: Thesis
+          A Thesis object that contains one or more scenarios.
+      num_paths: int, optional
+          The number of simulation paths to generate (default 1000).
+    
+    Returns:
+      np.array of terminal prices.
+    """
+    # If no scenarios are provided in the thesis, default to a neutral scenario.
+    scenarios = thesis.scenarios
+    if not scenarios:
+        scenarios = [Scenario(probability=1.0, price_move_pct=0.0, vol_adjust_pct=0.0)]
+    
+    # Build cumulative probabilities for weighted random selection.
+    scenario_probs = [sc.probability for sc in scenarios]
+    scenario_cumprobs = np.cumsum(scenario_probs)
+    total_prob = scenario_cumprobs[-1]
+    if abs(total_prob - 1.0) > 1e-6:
+        scenario_cumprobs = scenario_cumprobs / total_prob
 
-def forecast_future_price(S0, current_date, future_entry_date, risk_free_rate, volatility, num_paths=1000):
-    """
-    Forecasts the underlying price at a future entry date using GBM simulation.
-    Both current_date and future_entry_date are datetime.date objects.
-    Returns the average simulated price.
-    """
-    T = (future_entry_date - current_date).days / 365.0
-    simulated_prices = []
-    for _ in range(num_paths):
-        Z = np.random.normal()
-        price = S0 * np.exp((risk_free_rate - 0.5 * volatility**2)*T + volatility*np.sqrt(T)*Z)
-        simulated_prices.append(price)
-    return np.mean(simulated_prices)
-
-############################################################
-# 3. SIMULATION & EVALUATION FUNCTIONS (USING QUANTLIB)
-############################################################
-
-def simulate_terminal_price_with_path(S0, T, risk_free_rate, volatility, thesis_scenarios, num_paths=10000, use_thesis=True):
-    """
-    Simulates underlying price paths over a horizon T (in years) using a mixture of GBM processes.
-    Returns a tuple:
-      (terminal_prices, paths)
-    where:
-      - terminal_prices is a list of the final prices (adjusted),
-      - paths is a list of full simulated price paths (each path is a list of prices over time).
-    """
     terminal_prices = []
-    paths = []
+
     for _ in range(num_paths):
-        # (Determine adjusted_drift based on thesis scenarios, as in your code...)
-        if use_thesis:
-            probs = np.array([sc['prob'] for sc in thesis_scenarios])
-            probs = probs / probs.sum()
-            cum_probs = np.cumsum(probs)
-            r_val = np.random.rand()
-            scenario = None
-            for sc, cp in zip(thesis_scenarios, cum_probs):
-                if r_val <= cp:
-                    scenario = sc
-                    break
-            if scenario['description'] == 'moderate':
-                move_pct = scenario.get('move_pct', 10)
-                adjusted_drift = np.log(1 + move_pct/100.0) / T
-            elif scenario['description'] == 'big move':
-                move_pct = scenario.get('move_pct', 30)
-                direction_prob = scenario.get('direction_prob', 0.5)
-                if np.random.rand() < direction_prob:
-                    move_pct = move_pct
-                else:
-                    move_pct = -move_pct
-                adjusted_drift = np.log(1 + move_pct/100.0) / T
-            elif scenario['description'] == 'follow_ma':
-                ma_value = scenario['ma_value']
-                adjusted_drift = np.log(ma_value / S0) / T
-            elif scenario['description'] == 'neutral':
-                adjusted_drift = risk_free_rate
-            else:
-                adjusted_drift = risk_free_rate
+        # Pick a scenario based on weighted probabilities.
+        r_rand = np.random.rand()
+        chosen = None
+        for i, cp in enumerate(scenario_cumprobs):
+            if r_rand <= cp:
+                chosen = scenarios[i]
+                break
+        if chosen is None:
+            chosen = scenarios[-1]
+
+        # Calculate drift adjustment from the scenario.
+        if chosen.price_move_pct != 0:
+            drift_adjustment = np.log(1 + chosen.price_move_pct) / T
         else:
-            adjusted_drift = risk_free_rate
+            drift_adjustment = 0.0
+        
+        # Adjust volatility based on the scenario.
+        scenario_vol = base_volatility * (1 + chosen.vol_adjust_pct)
 
-        today = ql.Date().todaysDate()
-        ql.Settings.instance().evaluationDate = today
-        day_count = ql.Actual365Fixed()
-        calendar = ql.UnitedStates(ql.UnitedStates.NYSE)
-        expiry_date = calendar.advance(today, int(T * 365), ql.Days)
-        underlying = ql.SimpleQuote(S0)
-        flat_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, risk_free_rate, day_count))
-        dividend_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, 0.0, day_count))
-        vol_handle = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, volatility, day_count))
-        process = ql.BlackScholesMertonProcess(ql.QuoteHandle(underlying), dividend_ts, flat_ts, vol_handle)
-        time_grid = ql.TimeGrid(T, 100)
-        dim = len(time_grid) - 1
-        mt_rng = ql.MersenneTwisterUniformRng()
-        uniform_seq_gen = ql.UniformRandomSequenceGenerator(dim, mt_rng)
-        rng = ql.GaussianRandomSequenceGenerator(uniform_seq_gen)
-        seq = ql.GaussianPathGenerator(process, T, dim, rng, False)
-        sample_path = seq.next()
-        path = sample_path.value()  # The full price path.
-        # Save the entire path:
-        paths.append(list(path))
-        S_T = path.back()
-        S_T_adjusted = S_T * np.exp(adjusted_drift * T)
-        terminal_prices.append(S_T_adjusted)
-    return terminal_prices, paths
+        # Calculate the drift and diffusion for the GBM process.
+        drift = (base_risk_free_rate + drift_adjustment) - 0.5 * (scenario_vol ** 2)
+        diffusion = scenario_vol * np.sqrt(T)
+        
+        # Draw a standard normal sample.
+        Z = np.random.normal(0, 1)
+        
+        # Compute the terminal price using the GBM formula.
+        S_T = S0 * np.exp(drift * T + diffusion * Z)
+        terminal_prices.append(S_T)
+    
+    return np.array(terminal_prices)
 
 
-def evaluate_strategy_payoff(strategy, terminal_prices):
+def evaluate_strategy(strategy, terminal_prices):
     """
-    Computes the expected payoff and minimum payoff (downside) for a given strategy,
-    given simulated terminal prices.
+    Evaluate a given option strategy over simulated terminal prices.
+    
+    Parameters:
+      strategy: an object that implements a method `payoff_at_expiration(price)`
+                which returns the payoff for a given terminal underlying price.
+      terminal_prices: np.array
+                An array of simulated terminal prices.
+    
+    Returns:
+      A tuple (ev, downside) where:
+         ev: Expected value (average payoff) of the strategy.
+         downside: Minimum payoff across the simulated paths.
     """
     payoffs = [strategy.payoff_at_expiration(price) for price in terminal_prices]
     ev = np.mean(payoffs)
