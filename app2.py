@@ -18,7 +18,9 @@ from thesis import Scenario, Thesis
 from simulation.simulate import simulate_terminal_prices, evaluate_strategy
 from optimization.optimize import pick_top_strategies_greedy  # or optimize_strategy_lp
 
-# --- Streamlit UI ---
+# =============================================================================
+# User Interface
+# =============================================================================
 st.title("Modularized Option Strategy Recommender")
 
 st.sidebar.header("1. Input Ticker & Dates")
@@ -28,8 +30,8 @@ end_date = st.sidebar.date_input("Historical End Date", value=datetime.date.toda
 
 st.sidebar.header("2. Projection / Simulation")
 projection_days = st.sidebar.number_input("Days to Project", min_value=1, value=30)
-T = projection_days / 365.0  # time to expiration in years
-# If runtime is an issue, lower the simulation paths here.
+T = projection_days / 365.0  # Projection horizon for the underlying (in years)
+# Note: Option premiums come directly from the API (current market prices) – they are not simulated.
 num_paths = st.sidebar.number_input("Simulation Paths", min_value=100, value=1000, step=100)
 base_risk_free_rate = st.sidebar.slider("Base Risk-Free Rate", min_value=0.0, max_value=0.10, value=0.02)
 base_volatility = st.sidebar.slider("Base Volatility", min_value=0.0, max_value=1.0, value=0.30)
@@ -49,7 +51,6 @@ Enter multiple scenarios. For each scenario:
 
 scenario_list = []
 num_scenarios = st.number_input("Number of Scenarios", min_value=1, max_value=5, value=2)
-
 for i in range(num_scenarios):
     st.subheader(f"Scenario {i+1}")
     prob = st.slider(f"Probability {i+1}", 0.0, 1.0, 0.5, 0.01, key=f"prob_{i}")
@@ -64,7 +65,9 @@ for i in range(num_scenarios):
                       scenario_label=scenario_name)
         scenario_list.append(sc)
 
-# --- Helper Function for Detailed Contract Description ---
+# =============================================================================
+# Helper Function: Detailed Contract Description
+# =============================================================================
 def detailed_contract_description(strategy, expiration):
     """
     Returns a detailed, human-readable description of the contracts in a strategy.
@@ -75,6 +78,7 @@ def detailed_contract_description(strategy, expiration):
         if hasattr(leg, 'is_call'):  # OptionLeg
             option_type = "Call" if leg.is_call else "Put"
             position = "Long" if leg.is_long else "Short"
+            # Use the API premium value directly (assumed to be current market price)
             leg_desc = f"{position} {leg.quantity} {option_type} @ Strike {leg.strike}, Premium {leg.premium}, Expiring on {expiration}"
             descriptions.append(leg_desc)
         elif hasattr(leg, 'entry_price'):  # UnderlyingLeg
@@ -85,16 +89,18 @@ def detailed_contract_description(strategy, expiration):
             descriptions.append("Unknown leg type")
     return f"To perform the strategy '{strategy.name}', you must: " + "; ".join(descriptions)
 
-# --- Run Analysis ---
+# =============================================================================
+# Run Analysis
+# =============================================================================
 if st.button("Run Analysis"):
-    # Construct thesis
+    # Build Thesis object
     thesis_obj = Thesis(scenario_list)
     st.write(f"Total Probability: {thesis_obj.total_probability():.2f}")
     if len(thesis_obj.scenarios) < 1:
         st.warning("No scenarios provided. Please add at least one scenario.")
         st.stop()
 
-    # Fetch Historical Data
+    # Fetch historical underlying data
     st.write("Fetching historical data...")
     try:
         underlying_df = get_historical_underlying_data(
@@ -113,16 +119,18 @@ if st.button("Run Analysis"):
     current_price = float(underlying_df['Close'].iloc[-1])
     st.write(f"Current Price: {current_price:.2f}")
 
-    # Fetch & filter options data
+    # Fetch and filter options data (current option premiums come from the API)
     st.write("Fetching & filtering options data...")
     options_df = get_historical_options_data(ticker, start_date.isoformat(), end_date.isoformat())
     options_df = filter_options_by_volume(options_df, min_total_volume=250)
     exp_dict = create_expiration_dataframes(options_df)
 
-    # --- Candidate Strategy Generation ---
+    # =============================================================================
+    # Candidate Strategy Generation (using current API premium values)
+    # =============================================================================
     candidate_strategies = []
     if options_df.empty:
-        st.warning("No options data found after filtering. Demonstrating with placeholder candidates.")
+        st.warning("No options data found after filtering. Using placeholder candidates.")
     else:
         st.write("Processing candidate strategies across multiple expiration dates:")
         # Iterate over every expiration date available.
@@ -132,25 +140,24 @@ if st.button("Run Analysis"):
             for idx, row in df_exp.iterrows():
                 try:
                     strike = float(row['strike'])
+                    # Use the current premium from the API directly.
                     premium = float(row.get('premium', row.get('last', 0.0)))
                 except Exception:
                     continue
 
-                # Only consider strikes within ±10% of the current price.
+                # Only consider strikes within ±10% of current price.
                 if abs(strike - current_price) > current_price * 0.1:
                     continue
 
-                # Determine directional bias based on the first scenario in your thesis.
+                # Determine directional bias from the first scenario in your thesis.
                 if thesis_obj.scenarios:
                     direction = thesis_obj.scenarios[0].direction_label.lower()
                 else:
-                    direction = "bullish"  # default if none provided
+                    direction = "bullish"
 
-                # =============================
-                # For bullish (or neutral) views:
-                # =============================
+                # Build candidate strategies using the current premium values.
                 if direction in ["bullish", "neutral"]:
-                    # 1. Long Call
+                    # Example 1: Long Call
                     if "LongCall" in STRATEGY_BUILDERS:
                         strat = STRATEGY_BUILDERS["LongCall"](strike, premium, quantity=1)
                         cost = premium
@@ -320,14 +327,16 @@ if st.button("Run Analysis"):
                 if "Nothing" in STRATEGY_BUILDERS:
                     strat = STRATEGY_BUILDERS["Nothing"](base_risk_free_rate, T, cash=1)
                     candidate_strategies.append((strat, 0, 0, 0, 0, expiration_str))
-
+                    
     if not candidate_strategies:
         st.warning("No candidate strategies were generated.")
     else:
         st.write(f"Found {len(candidate_strategies)} candidate strategies.")
 
-    # --- Simulation ---
-    st.write("Simulating terminal prices under your thesis scenarios...")
+    # =============================================================================
+    # Underlying Price Simulation (using GBM)
+    # =============================================================================
+    st.write("Simulating terminal underlying prices under your thesis scenarios...")
     terminal_prices = simulate_terminal_prices(
         S0=current_price,
         T=T,
@@ -337,9 +346,11 @@ if st.button("Run Analysis"):
         num_paths=num_paths
     )
 
-    # --- Evaluation ---
+    # =============================================================================
+    # Evaluate Candidate Strategies
+    # =============================================================================
     results = []
-    # Set risk tolerance factor based on preference.
+    # Set risk tolerance factor based on user preference.
     if risk_preference == "Low":
         lambda_val = 1.5
     elif risk_preference == "High":
@@ -352,13 +363,14 @@ if st.button("Run Analysis"):
         strategy_obj = cand[0]
         cost = cand[2]
         ev, downside = evaluate_strategy(strategy_obj, terminal_prices)
-        # Define a "score"
         score = ev - lambda_val * abs(downside)
         results.append((strategy_obj, score, cost, ev, downside))
 
-    # --- Selection ---
+    # =============================================================================
+    # Select Top 3 Candidates
+    # =============================================================================
     if pick_method == "Linear Program":
-        st.write("Using linear program approach (not fully implemented cost details).")
+        st.write("Using linear program approach (not fully implemented).")
         candidate_lp = []
         for item in results:
             strategy_obj, s_score, s_cost, s_ev, s_down = item
@@ -369,7 +381,9 @@ if st.button("Run Analysis"):
         st.write("Using greedy top 3 approach.")
         selected = pick_top_strategies_greedy(results, top_n=3)
 
-    # --- Output Top 3 Results Only ---
+    # =============================================================================
+    # Display Only the Top 3 Strategies
+    # =============================================================================
     if not selected:
         st.warning("No strategies selected.")
     else:
@@ -377,7 +391,7 @@ if st.button("Run Analysis"):
         for idx, sel in enumerate(selected, 1):
             strat_obj, score, cost, ev, downside = sel
             st.write(f"**{idx}. {strat_obj.name}**")
-            # Retrieve expiration info from candidate_strategies
+            # Retrieve expiration info for the candidate strategy.
             expiration = ""
             for cand in candidate_strategies:
                 if cand[0] == strat_obj:
@@ -400,7 +414,7 @@ if st.button("Run Analysis"):
             )
             st.plotly_chart(fig)
 
-        # Optional: Display distribution of terminal prices
+        # Optional: Plot distribution of terminal underlying prices.
         st.subheader("Distribution of Simulated Terminal Prices")
         hist_fig = go.Figure()
         hist_fig.add_trace(go.Histogram(x=terminal_prices, nbinsx=50))
