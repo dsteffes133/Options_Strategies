@@ -121,7 +121,7 @@ if st.button("Run Analysis"):
 
     # Fetch and filter options data (current option premiums come from the API)
     st.write("Fetching & filtering options data...")
-    options_df = get_historical_options_data(ticker, start_date.isoformat(), end_date.isoformat())
+    options_df = get_historical_options_data(ticker, start_date=start_date, end_date=end_date)
     options_df = filter_options_by_volume(options_df, min_total_volume=250)
     exp_dict = create_expiration_dataframes(options_df)
 

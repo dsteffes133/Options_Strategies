@@ -49,6 +49,12 @@ def get_historical_underlying_data(ticker, start_date=None, end_date=None):
     return df
 
 
+import pandas as pd
+import requests
+from datetime import date
+
+ALPHAVANTAGE_API_KEY = '8CTF0D0WVXWCLBVF'
+
 def get_historical_options_data(ticker, start_date, end_date):
     """
     Placeholder function for historical options data.
@@ -62,7 +68,7 @@ def get_historical_options_data(ticker, start_date, end_date):
     for single_date in all_dates:
         date_str = single_date.strftime('%Y-%m-%d')
         url = (f"https://www.alphavantage.co/query?function=HISTORICAL_OPTIONS"
-               f"&symbol={ticker}&date={date_str}&apikey={ALPHAVANTAGE_API_KEY}")
+               f"&symbol={ticker}&date={date_str}&apikey={'8CTF0D0WVXWCLBVF'}")
         r = requests.get(url)
         data = r.json()
         if 'data' in data:
@@ -74,6 +80,7 @@ def get_historical_options_data(ticker, start_date, end_date):
     else:
         options_df = pd.DataFrame()
     return options_df
+
 
 
 def filter_options_by_volume(options_df, min_total_volume=100):
